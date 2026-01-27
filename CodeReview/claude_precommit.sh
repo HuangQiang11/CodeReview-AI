@@ -289,7 +289,14 @@ if [ "$CLAUDE_ERROR" = true ] || [ "$CLAUDE_AVAILABLE" = false ]; then
   # 使用弹窗询问用户
   USER_CHOICE=""
   if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
-    USER_CHOICE=$(show_macos_dialog "Claude 代码审核服务不可用或超时\n\n原因可能是：\n- Claude 服务暂时不可用\n- 网络连接问题\n- 审核超时（超过 ${CLAUDE_TIMEOUT} 秒）\n\n是否继续提交代码？" "代码审核服务异常" "\"取消提交\", \"继续提交\"" "继续提交")
+    USER_CHOICE=$(show_macos_dialog \
+    "Claude 代码审核服务不可用或超时
+    原因可能是：
+    - Claude 服务暂时不可用
+    - 网络连接问题
+    - 审核超时（超过 ${CLAUDE_TIMEOUT} 秒）
+    是否继续提交代码？" "代码审核服务异常" "\"取消提交\", \"继续提交\"" "继续提交"
+    )
     DIALOG_EXIT_CODE=$?
 
     # 如果弹窗失败，降级到命令行交互
@@ -480,7 +487,13 @@ CHOICE=""
 # 使用弹窗询问用户（仅 macOS）
 if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
   # macOS 使用 osascript 显示弹窗
-  CHOICE=$(show_macos_dialog "代码审核完成\n\n变更文件数: $FILE_COUNT\n发现风险数: $RISK_COUNT\n  - 高风险: $HIGH_RISK_COUNT\n  - 中风险: $MEDIUM_RISK_COUNT\n\n审核报告已保存到: last_review_info.txt" "代码审核结果" "\"查看详情\", \"取消提交\", \"继续提交\"" "查看详情")
+  CHOICE=$(show_macos_dialog \
+  "代码审核完成
+  变更文件数: $FILE_COUNT
+  发现风险数: $RISK_COUNT
+    - 高风险: $HIGH_RISK_COUNT
+    - 中风险: $MEDIUM_RISK_COUNT
+  审核报告已保存到: last_review_info.txt" "代码审核结果" "\"查看详情\", \"取消提交\", \"继续提交\"" "查看详情")
   DIALOG_EXIT_CODE=$?
 
   # 如果 osascript 失败（无 GUI 环境），降级到命令行交互
@@ -522,7 +535,9 @@ if [ -n "$CHOICE" ]; then
         
         # 重新显示弹窗，让用户选择是否提交
         if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
-          FINAL_CHOICE=$(show_macos_dialog "审核报告已打开\n\n请查看 last_review_info.txt 文件后，决定是否继续提交代码" "代码审核 - 确认提交" "\"取消提交\", \"继续提交\"" "继续提交")
+          FINAL_CHOICE=$(show_macos_dialog \
+          "审核报告已打开
+          请查看 last_review_info.txt 文件后，决定是否继续提交代码" "代码审核 - 确认提交" "\"取消提交\", \"继续提交\"" "继续提交")
         else
           FINAL_CHOICE=""
         fi
