@@ -1,6 +1,69 @@
 #!/bin/bash
 
-# 添加：执行前选择弹窗（放在最前面）
+# ============================================================================
+# 工具函数
+# ============================================================================
+
+# 清理临时文件
+cleanup_temp_files() {
+  rm -f "$DIFF_FILE" "$TEMP_RESULT" "$TEMP_PID" 2>/dev/null
+}
+
+# 命令行交互：询问用户是否继续提交（通用函数）
+# 参数: $1 - 提示消息标题（可选）
+ask_user_continue_commit() {
+  local title="${1:-代码审核结果}"
+  
+  echo ""
+  echo "================================================================="
+  echo "$title"
+  echo "================================================================="
+  echo ""
+  echo "输入命令："
+  echo "  1) yes  - 继续提交"
+  echo "  2) no   - 取消提交"
+  echo ""
+
+  while true; do
+    printf "你的选择 (yes/no): "
+    read choice
+    choice=$(echo "$choice" | xargs)
+
+    if [ -z "$choice" ]; then
+      echo ""
+      echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
+      echo ""
+      continue
+    fi
+
+    case "$choice" in
+      yes|y|Y|YES)
+        echo ""
+        echo "✅ 已批准提交"
+        echo ""
+        cleanup_temp_files
+        exit 0
+        ;;
+      no|n|N|NO)
+        echo ""
+        echo "❌ 已阻断提交"
+        echo ""
+        echo "请修复问题后重新提交"
+        exit 1
+        ;;
+      *)
+        echo ""
+        echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
+        echo ""
+        ;;
+    esac
+  done
+}
+
+# ============================================================================
+# 执行前选择弹窗（放在最前面）
+# ============================================================================
+
 # 检测是否是macOS
 if [[ "$OSTYPE" == "darwin"* ]]; then
   # 尝试显示macOS弹窗
@@ -68,7 +131,9 @@ if [[ "$OSTYPE" != "darwin"* ]] || [ -z "$CHOICE" ]; then
   fi
 fi
 
-# 以下是您原来的脚本内容，不做任何修改
+# ============================================================================
+# 环境检测和初始化
+# ============================================================================
 
 # 检测是否在 pre-commit hook 中运行
 IS_PRE_COMMIT=false
@@ -109,48 +174,43 @@ cd "$PROJECT_ROOT" || exit 1
 
 echo "🔍 Claude Code 正在审核本次提交..."
 
+# ============================================================================
+# 文件路径初始化
+# ============================================================================
+
 # 设置临时文件路径
 TMP_DIR="/tmp"
 DIFF_FILE="$TMP_DIR/claude_diff_$$.patch"
+TEMP_RESULT=""
+TEMP_PID=""
+
+# 设置审核结果输出文件
+REVIEW_FILE="$PROJECT_ROOT/last_review_info.txt"
 
 # ⚠️ 一定要用 git diff - 使用完整路径，禁用 pager
 $GIT_CMD --no-pager diff --cached > "$DIFF_FILE"
 
 if [ ! -s "$DIFF_FILE" ]; then
   echo "ℹ️ 无 staged 变更，跳过审核"
-  rm -f "$DIFF_FILE"
+  cleanup_temp_files
   exit 0
 fi
 
-# 设置审核结果输出文件
-REVIEW_FILE="$PROJECT_ROOT/last_review_info.txt"
-
-# 检测项目类型（iOS 或 Android）
-PROJECT_TYPE=""
+# ============================================================================
+# 项目类型检测（iOS 或 Android）
+# ============================================================================
 
 # 检测 iOS 项目特征
 IOS_INDICATORS=0
-if [ -f "$PROJECT_ROOT/Podfile" ]; then
-  IOS_INDICATORS=$((IOS_INDICATORS + 1))
-fi
-if find "$PROJECT_ROOT" -maxdepth 1 -name "*.xcodeproj" -o -name "*.xcworkspace" 2>/dev/null | grep -q .; then
-  IOS_INDICATORS=$((IOS_INDICATORS + 1))
-fi
-if find "$PROJECT_ROOT" -maxdepth 2 -name "Info.plist" 2>/dev/null | grep -q .; then
-  IOS_INDICATORS=$((IOS_INDICATORS + 1))
-fi
+[ -f "$PROJECT_ROOT/Podfile" ] && IOS_INDICATORS=$((IOS_INDICATORS + 1))
+find "$PROJECT_ROOT" -maxdepth 1 -name "*.xcodeproj" -o -name "*.xcworkspace" 2>/dev/null | grep -q . && IOS_INDICATORS=$((IOS_INDICATORS + 1))
+find "$PROJECT_ROOT" -maxdepth 2 -name "Info.plist" 2>/dev/null | grep -q . && IOS_INDICATORS=$((IOS_INDICATORS + 1))
 
 # 检测 Android 项目特征
 ANDROID_INDICATORS=0
-if [ -f "$PROJECT_ROOT/build.gradle" ] || [ -f "$PROJECT_ROOT/settings.gradle" ]; then
-  ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
-fi
-if [ -f "$PROJECT_ROOT/app/build.gradle" ] || [ -d "$PROJECT_ROOT/app" ]; then
-  ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
-fi
-if find "$PROJECT_ROOT" -maxdepth 2 -name "AndroidManifest.xml" 2>/dev/null | grep -q .; then
-  ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
-fi
+([ -f "$PROJECT_ROOT/build.gradle" ] || [ -f "$PROJECT_ROOT/settings.gradle" ]) && ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
+([ -f "$PROJECT_ROOT/app/build.gradle" ] || [ -d "$PROJECT_ROOT/app" ]) && ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
+find "$PROJECT_ROOT" -maxdepth 2 -name "AndroidManifest.xml" 2>/dev/null | grep -q . && ANDROID_INDICATORS=$((ANDROID_INDICATORS + 1))
 
 # 根据指标数量判断项目类型
 if [ $IOS_INDICATORS -gt $ANDROID_INDICATORS ]; then
@@ -164,6 +224,10 @@ else
   PROJECT_TYPE="ios"
   echo "⚠️  无法确定项目类型，默认使用 iOS 审核规则"
 fi
+
+# ============================================================================
+# 提示词文件配置
+# ============================================================================
 
 # 根据项目类型设置审核提示词文件
 if [ "$PROJECT_TYPE" = "ios" ]; then
@@ -192,39 +256,35 @@ if [ ! -f "$PROMPT_FILE" ]; then
     echo "   - $PROJECT_ROOT/CodeReview/claude_prompt_ios.txt (iOS 项目)"
     echo "   - $PROJECT_ROOT/CodeReview/claude_prompt_android.txt (Android 项目)"
     echo "   - $PROJECT_ROOT/CodeReview/claude_prompt.txt (通用)"
+    cleanup_temp_files
     exit 1
   fi
 fi
+
+# ============================================================================
+# Claude 命令检测
+# ============================================================================
 
 # 检查 claude 命令是否可用（尝试多个可能的路径）
 CLAUDE_CMD=""
 CLAUDE_AVAILABLE=false
 
 # 尝试多个可能的 claude 命令路径
-if command -v claude &> /dev/null; then
-  CLAUDE_CMD="claude"
-  CLAUDE_AVAILABLE=true
-elif [ -f "$HOME/.local/bin/claude" ]; then
-  CLAUDE_CMD="$HOME/.local/bin/claude"
-  CLAUDE_AVAILABLE=true
-elif [ -f "/usr/local/bin/claude" ]; then
-  CLAUDE_CMD="/usr/local/bin/claude"
-  CLAUDE_AVAILABLE=true
-elif [ -f "/opt/homebrew/bin/claude" ]; then
-  CLAUDE_CMD="/opt/homebrew/bin/claude"
-  CLAUDE_AVAILABLE=true
-elif [ -f "$HOME/bin/claude" ]; then
-  CLAUDE_CMD="$HOME/bin/claude"
-  CLAUDE_AVAILABLE=true
-fi
-
-# 如果找到了 claude 命令，验证它是否可执行
-if [ "$CLAUDE_AVAILABLE" = true ] && [ -n "$CLAUDE_CMD" ]; then
-  if [ ! -x "$CLAUDE_CMD" ] && ! command -v "$CLAUDE_CMD" &> /dev/null; then
-    CLAUDE_AVAILABLE=false
-    CLAUDE_CMD=""
+for path in "claude" \
+            "$HOME/.local/bin/claude" \
+            "/usr/local/bin/claude" \
+            "/opt/homebrew/bin/claude" \
+            "$HOME/bin/claude"; do
+  if command -v "$path" &> /dev/null || ([ -f "$path" ] && [ -x "$path" ]); then
+    CLAUDE_CMD="$path"
+    CLAUDE_AVAILABLE=true
+    break
   fi
-fi
+done
+
+# ============================================================================
+# Claude 调用和结果处理
+# ============================================================================
 
 # 调用 claude（带超时处理，默认 60 秒）
 CLAUDE_TIMEOUT=60
@@ -380,8 +440,7 @@ if [ "$CLAUDE_ERROR" = true ] || [ "$CLAUDE_AVAILABLE" = false ]; then
       "继续提交")
         echo "✅ 用户选择继续提交（跳过审核）"
         echo ""
-        # 清理临时文件
-        rm -f "$DIFF_FILE" "$TEMP_RESULT" "$TEMP_PID" 2>/dev/null
+        cleanup_temp_files
         exit 0
         ;;
       *)
@@ -395,46 +454,7 @@ if [ "$CLAUDE_ERROR" = true ] || [ "$CLAUDE_AVAILABLE" = false ]; then
         echo "  - 网络连接问题"
         echo "  - 审核超时（超过 ${CLAUDE_TIMEOUT} 秒）"
         echo ""
-        echo "是否继续提交代码？"
-        echo ""
-        echo "输入命令："
-        echo "  1) yes  - 继续提交（跳过审核）"
-        echo "  2) no   - 取消提交"
-        echo ""
-
-        while true; do
-          printf "你的选择 (yes/no): "
-          read choice
-          choice=$(echo "$choice" | xargs)
-
-          if [ -z "$choice" ]; then
-            echo ""
-            echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-            echo ""
-            continue
-          fi
-
-          case "$choice" in
-            yes|y|Y|YES)
-              echo ""
-              echo "✅ 继续提交（跳过审核）"
-              echo ""
-              # 清理临时文件
-              rm -f "$DIFF_FILE" "$TEMP_RESULT" "$TEMP_PID" 2>/dev/null
-              exit 0
-              ;;
-            no|n|N|NO)
-              echo ""
-              echo "❌ 取消提交"
-              exit 1
-              ;;
-            *)
-              echo ""
-              echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-              echo ""
-              ;;
-          esac
-        done
+        ask_user_continue_commit "是否继续提交代码？"
         ;;
     esac
   else
@@ -448,46 +468,7 @@ if [ "$CLAUDE_ERROR" = true ] || [ "$CLAUDE_AVAILABLE" = false ]; then
     echo "  - 网络连接问题"
     echo "  - 审核超时（超过 ${CLAUDE_TIMEOUT} 秒）"
     echo ""
-    echo "是否继续提交代码？"
-    echo ""
-    echo "输入命令："
-    echo "  1) yes  - 继续提交（跳过审核）"
-    echo "  2) no   - 取消提交"
-    echo ""
-    
-    while true; do
-      printf "你的选择 (yes/no): "
-      read choice
-      choice=$(echo "$choice" | xargs)
-
-      if [ -z "$choice" ]; then
-        echo ""
-        echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-        echo ""
-        continue
-      fi
-
-      case "$choice" in
-        yes|y|Y|YES)
-          echo ""
-          echo "✅ 继续提交（跳过审核）"
-          echo ""
-          # 清理临时文件
-          rm -f "$DIFF_FILE" "$TEMP_RESULT" "$TEMP_PID" 2>/dev/null
-          exit 0
-          ;;
-        no|n|N|NO)
-          echo ""
-          echo "❌ 取消提交"
-          exit 1
-          ;;
-        *)
-          echo ""
-          echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-          echo ""
-          ;;
-      esac
-    done
+    ask_user_continue_commit "是否继续提交代码？"
   fi
 fi
 
@@ -740,50 +721,7 @@ if [ -n "$CHOICE" ]; then
             echo ""
             echo "⚠️  弹窗显示失败，使用命令行交互"
             echo ""
-            echo "================================================================="
-            echo "请查看审核报告 last_review_info.txt，然后决定是否继续提交："
-            echo "================================================================="
-            echo ""
-            echo "输入命令："
-            echo "  1) yes  - 继续提交（审核报告将保留）"
-            echo "  2) no   - 阻断提交（审核报告将保留）"
-            echo ""
-
-            # 询问用户决定
-            while true; do
-              printf "你的选择 (yes/no): "
-      read choice
-              # 去除首尾空格
-              choice=$(echo "$choice" | xargs)
-              
-              # 如果输入为空，跳过本次循环
-              if [ -z "$choice" ]; then
-                echo ""
-                echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-                echo ""
-                continue
-              fi
-              
-              case "$choice" in
-                yes|y|Y|YES)
-                  echo ""
-                  echo "✅ 已批准提交"
-                  echo ""
-                  exit 0
-                  ;;
-                no|n|N|NO)
-                  echo ""
-                  echo "❌ 已阻断提交"
-                  echo ""
-                  echo "请修复问题后重新提交"
-                  exit 1
-                  ;;
-                *)
-                  echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-                  echo ""
-                  ;;
-              esac
-            done
+            ask_user_continue_commit "请查看审核报告 last_review_info.txt，然后决定是否继续提交："
             ;;
         esac
         ;;
@@ -808,6 +746,7 @@ if [ -z "$CHOICE" ]; then
     # 如果设置了允许非交互式提交的环境变量，则允许提交
     if [ "$ALLOW_NONINTERACTIVE_COMMIT" = "1" ]; then
       echo "✅ 检测到 ALLOW_NONINTERACTIVE_COMMIT=1，允许非交互式提交"
+      cleanup_temp_files
       exit 0
     else
       echo "如需继续提交，请使用以下命令之一："
@@ -819,53 +758,8 @@ if [ -z "$CHOICE" ]; then
     fi
   fi
 
-  echo ""
-  echo "================================================================="
-  echo "请查看审核报告 last_review_info.txt，然后决定是否继续提交："
-  echo "================================================================="
-  echo ""
-  echo "输入命令："
-  echo "  1) yes  - 继续提交（审核报告将保留）"
-  echo "  2) no   - 阻断提交（审核报告将保留）"
-  echo ""
-
-  # 询问用户决定
-  while true; do
-    printf "你的选择 (yes/no): "
-    read choice
-    # 去除首尾空格
-    choice=$(echo "$choice" | xargs)
-
-    # 如果输入为空，跳过本次循环
-    if [ -z "$choice" ]; then
-      echo ""
-      echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-      echo ""
-      continue
-    fi
-
-    case "$choice" in
-      yes|y|Y|YES)
-        echo ""
-        echo "✅ 已批准提交"
-        echo ""
-        exit 0
-        ;;
-      no|n|N|NO)
-        echo ""
-        echo "❌ 已阻断提交"
-        echo ""
-        echo "请修复问题后重新提交"
-        exit 1
-        ;;
-      *)
-        echo ""
-        echo "提示： 请输入 yes 或 no， 或按 ctrl+c 取消"
-        echo ""
-        ;;
-    esac
-  done
+  ask_user_continue_commit "请查看审核报告 last_review_info.txt，然后决定是否继续提交："
 fi
 
 # 清理临时文件
-rm -f "$DIFF_FILE" "$TEMP_RESULT" "$TEMP_PID"
+cleanup_temp_files
