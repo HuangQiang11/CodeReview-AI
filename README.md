@@ -1,3 +1,8 @@
+# Code review
+
+标签（空格分隔）： Claude Code
+
+---
 ## Claude Code + Git Hook 本地代码审核方案 ##
 
 本方案通过 Git Hook + Claude Code 在开发者本地提交阶段进行自动代码审核，提前拦截高风险代码，并可无缝扩展至 CI / PR 阶段，形成完整的代码质量防线。
@@ -56,6 +61,14 @@ claude --version
 
 #### 四、本地代码审核接入
 
+✅ 自动接入方式（推荐）
+在项目根目录下执行install_codereview脚本
+```
+./install_codereview.sh
+```
+
+手动接入方式（原始流程）
+
 - Step 2：准备审核脚本
     1.    将 CodeReview 目录拷贝到 项目根目录
     2.    赋予脚本执行权限：
@@ -113,3 +126,5 @@ chmod +x .git/hooks/pre-commit
     •    本地 Hook 只做 高风险拦截，避免过度严格
     •    CI / PR 阶段可执行 更完整、更耗时的审核
     •    审核 Prompt 建议版本化维护，便于团队统一标准
+
+
