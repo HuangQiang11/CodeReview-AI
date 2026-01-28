@@ -259,24 +259,20 @@ else
   echo "   当前 PATH: $PATH"
 fi
 
-# macOS 弹窗函数
+# macOS 弹窗函数 - 修复版本
 show_macos_dialog() {
   local message="$1"
   local title="$2"
   local buttons="$3"
   local default_button="$4"
 
-  # 转义 AppleScript 特殊字符
-  local escaped_message=$(echo "$message" | sed "s/\\\/\\\\\\\/g" | sed "s/\"/\\\\\"/g")
-
-  # 尝试执行 osascript，如果失败则返回空字符串
+  # 修复：在AppleScript中直接构建消息，避免shell变量替换问题
   osascript <<EOF 2>/dev/null
-    set theMessage to "$escaped_message"
+    set theMessage to "$message"
     set theButtons to {$buttons}
     set theResult to display dialog theMessage buttons theButtons default button "$default_button" with title "$title" with icon caution
     return button returned of theResult
 EOF
-  # 如果 osascript 失败，返回空字符串（退出码非0）
   return $?
 }
 
@@ -289,14 +285,12 @@ if [ "$CLAUDE_ERROR" = true ] || [ "$CLAUDE_AVAILABLE" = false ]; then
   # 使用弹窗询问用户
   USER_CHOICE=""
   if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
+    # 修复：使用单行消息避免格式问题
     USER_CHOICE=$(show_macos_dialog \
-    "Claude 代码审核服务不可用或超时
-    原因可能是：
-    - Claude 服务暂时不可用
-    - 网络连接问题
-    - 审核超时（超过 ${CLAUDE_TIMEOUT} 秒）
-    是否继续提交代码？" "代码审核服务异常" "\"取消提交\", \"继续提交\"" "继续提交"
-    )
+    "Claude代码审核服务不可用或超时\n原因可能是：\n- Claude服务暂时不可用\n- 网络连接问题\n- 审核超时（超过${CLAUDE_TIMEOUT}秒）\n是否继续提交代码？" \
+    "代码审核服务异常" \
+    "\"取消提交\", \"继续提交\"" \
+    "继续提交")
     DIALOG_EXIT_CODE=$?
 
     # 如果弹窗失败，降级到命令行交互
@@ -475,25 +469,137 @@ echo "=================================================================" >> "$RE
 echo "✅ 审核完成，已生成报告文件: last_review_info.txt"
 echo ""
 
-# 提取审核结果的关键信息用于弹窗显示
-RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -c "风险描述\|严重程度" || echo "0")
-HIGH_RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -c "严重程度.*高" || echo "0")
-MEDIUM_RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -c "严重程度.*中" || echo "0")
-FILE_COUNT=$(echo "$CHANGED_FILES" | wc -l | tr -d ' ')
+# 修复：更智能的风险统计方法
+# 首先提取所有风险描述块
+RISK_BLOCKS=$(echo "$CLEAN_RESULT" | grep -n "风险描述" | cut -d: -f1)
+
+# 初始化计数器
+RISK_COUNT=0
+HIGH_RISK_COUNT=0
+MEDIUM_RISK_COUNT=0
+LOW_RISK_COUNT=0
+
+# 如果有风险描述，进行详细统计
+if [ -n "$RISK_BLOCKS" ]; then
+    # 计算风险总数
+    RISK_COUNT=$(echo "$RISK_BLOCKS" | wc -l)
+    
+    # 统计每种风险类型
+    HIGH_RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -A5 "风险描述" | grep -c "严重程度.*高\|高风险")
+    MEDIUM_RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -A5 "风险描述" | grep -c "严重程度.*中\|中风险")
+    LOW_RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -A5 "风险描述" | grep -c "严重程度.*低\|低风险")
+    
+    # 如果还有其他风险（未明确分类的），都归为中风险
+    UNCERTAIN_RISK_COUNT=$((RISK_COUNT - HIGH_RISK_COUNT - MEDIUM_RISK_COUNT - LOW_RISK_COUNT))
+    if [ $UNCERTAIN_RISK_COUNT -gt 0 ]; then
+        MEDIUM_RISK_COUNT=$((MEDIUM_RISK_COUNT + UNCERTAIN_RISK_COUNT))
+    fi
+else
+    # 如果没有明确的风险描述，尝试其他统计方法
+    RISK_COUNT=$(echo "$CLEAN_RESULT" | grep -c "风险描述\|风险提示\|发现.*风险\|潜在问题")
+    
+    # 如果没有找到任何风险，设置为0
+    if [ -z "$RISK_COUNT" ] || [ "$RISK_COUNT" -eq 0 ]; then
+        RISK_COUNT=0
+        HIGH_RISK_COUNT=0
+        MEDIUM_RISK_COUNT=0
+        LOW_RISK_COUNT=0
+    else
+        # 如果有风险但没有明确分类，假设都是中风险
+        MEDIUM_RISK_COUNT=$RISK_COUNT
+    fi
+fi
+
+# 确保所有值都是数字
+RISK_COUNT=$((RISK_COUNT))
+HIGH_RISK_COUNT=$((HIGH_RISK_COUNT))
+MEDIUM_RISK_COUNT=$((MEDIUM_RISK_COUNT))
+LOW_RISK_COUNT=$((LOW_RISK_COUNT))
+
+# 修复：文件数统计
+FILE_COUNT=$(echo "$CHANGED_FILES" | wc -w)
+FILE_COUNT=$((FILE_COUNT))
+
+# 调试：显示统计值
+echo "调试信息 - 风险统计:"
+echo "  总风险数: $RISK_COUNT"
+echo "  高风险数: $HIGH_RISK_COUNT"
+echo "  中风险数: $MEDIUM_RISK_COUNT"
+echo "  低风险数: $LOW_RISK_COUNT"
+echo "  变更文件数: $FILE_COUNT"
 
 # 初始化用户选择变量
 CHOICE=""
 
-# 使用弹窗询问用户（仅 macOS）
+# 修复：专门的审核结果弹窗函数
 if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
-  # macOS 使用 osascript 显示弹窗
-  CHOICE=$(show_macos_dialog \
-  "代码审核完成
-  变更文件数: $FILE_COUNT
-  发现风险数: $RISK_COUNT
-    - 高风险: $HIGH_RISK_COUNT
-    - 中风险: $MEDIUM_RISK_COUNT
-  审核报告已保存到: last_review_info.txt" "代码审核结果" "\"查看详情\", \"取消提交\", \"继续提交\"" "查看详情")
+  # 直接在AppleScript中构建完整消息
+  CHOICE=$(osascript <<EOF 2>/dev/null
+    set fileCount to "$FILE_COUNT"
+    set riskCount to "$RISK_COUNT"
+    set highRisk to "$HIGH_RISK_COUNT"
+    set mediumRisk to "$MEDIUM_RISK_COUNT"
+    set lowRisk to "$LOW_RISK_COUNT"
+    
+    -- 清理变量值（确保是纯数字）
+    set fileCount to (do shell script "echo '" & fileCount & "' | tr -cd '0-9'")
+    set riskCount to (do shell script "echo '" & riskCount & "' | tr -cd '0-9'")
+    set highRisk to (do shell script "echo '" & highRisk & "' | tr -cd '0-9'")
+    set mediumRisk to (do shell script "echo '" & mediumRisk & "' | tr -cd '0-9'")
+    set lowRisk to (do shell script "echo '" & lowRisk & "' | tr -cd '0-9'")
+    
+    -- 如果为空则设为0
+    if fileCount is "" then set fileCount to "0"
+    if riskCount is "" then set riskCount to "0"
+    if highRisk is "" then set highRisk to "0"
+    if mediumRisk is "" then set mediumRisk to "0"
+    if lowRisk is "" then set lowRisk to "0"
+    
+    -- 验证风险总数等于各类风险之和
+    set totalRisks to (highRisk as integer) + (mediumRisk as integer) + (lowRisk as integer)
+    if totalRisks ≠ (riskCount as integer) then
+        -- 如果不匹配，调整风险总数
+        set riskCount to (totalRisks as string)
+    end if
+    
+    -- 构建消息
+    set msgLines to {}
+    set end of msgLines to "代码审核完成"
+    set end of msgLines to "变更文件数: " & fileCount
+    set end of msgLines to "发现风险数: " & riskCount
+    
+    if (highRisk as integer) > 0 then
+        set end of msgLines to "  - 高风险: " & highRisk
+    end if
+    
+    if (mediumRisk as integer) > 0 then
+        set end of msgLines to "  - 中风险: " & mediumRisk
+    end if
+    
+    if (lowRisk as integer) > 0 then
+        set end of msgLines to "  - 低风险: " & lowRisk
+    end if
+    
+    -- 如果没有找到风险类型，显示一个通用提示
+    if (highRisk as integer) = 0 and (mediumRisk as integer) = 0 and (lowRisk as integer) = 0 and (riskCount as integer) > 0 then
+        set end of msgLines to "  - 请查看详细报告了解风险分类"
+    end if
+    
+    set end of msgLines to "审核报告已保存到: last_review_info.txt"
+    
+    -- 合并所有行
+    set AppleScript's text item delimiters to return
+    set theMessage to msgLines as text
+    set AppleScript's text item delimiters to ""
+    
+    set theResult to display dialog theMessage ¬
+        buttons {"查看详情", "取消提交", "继续提交"} ¬
+        default button "查看详情" ¬
+        with title "代码审核结果" ¬
+        with icon caution
+    return button returned of theResult
+EOF
+  )
   DIALOG_EXIT_CODE=$?
 
   # 如果 osascript 失败（无 GUI 环境），降级到命令行交互
@@ -536,8 +642,10 @@ if [ -n "$CHOICE" ]; then
         # 重新显示弹窗，让用户选择是否提交
         if [ "$IS_MAC" = true ] && [ "$HAS_GUI_SESSION" = true ]; then
           FINAL_CHOICE=$(show_macos_dialog \
-          "审核报告已打开
-          请查看 last_review_info.txt 文件后，决定是否继续提交代码" "代码审核 - 确认提交" "\"取消提交\", \"继续提交\"" "继续提交")
+          "审核报告已打开\n请查看 last_review_info.txt 文件后，决定是否继续提交代码" \
+          "代码审核 - 确认提交" \
+          "\"取消提交\", \"继续提交\"" \
+          "继续提交")
         else
           FINAL_CHOICE=""
         fi
